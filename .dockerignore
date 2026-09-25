@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+!/.env.example
+**/.env
+**/.env.*
+infra/secrets/*
+!infra/secrets/.gitignore
+node_modules
+frontend/node_modules
+backend/.venv
+__pycache__
+.next
+dist
+coverage
+

@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: keynest
+      POSTGRES_USER: keynest
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keynest -d keynest"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  api:
+    build: { context: ., dockerfile: Dockerfile.backend }
+    environment:
+      KEYNEST_DATABASE_URL_FILE: /run/secrets/database_url
+      KEYNEST_MASTER_KEY_FILE: /run/secrets/master_key
+      KEYNEST_SESSION_SECRET_FILE: /run/secrets/session_secret
+      KEYNEST_PUBLIC_ORIGIN: https://keynest.example.invalid
+      KEYNEST_PRODUCTION: "true"
+    secrets: [database_url, master_key, session_secret]
+    depends_on: { postgres: { condition: service_healthy } }
+    read_only: true
+    tmpfs: [/tmp]
+  web:
+    build: { context: ., dockerfile: Dockerfile.frontend }
+    environment: { NEXT_PUBLIC_API_ORIGIN: https://keynest.example.invalid }
+    depends_on: [api]
+    read_only: true
+secrets:
+  postgres_password: { file: ./infra/secrets/postgres_password }
+  database_url: { file: ./infra/secrets/database_url }
+  master_key: { file: ./infra/secrets/master_key }
+  session_secret: { file: ./infra/secrets/session_secret }
+volumes: { postgres-data: {} }
