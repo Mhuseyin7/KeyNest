@@ -22,7 +22,11 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 100
 
+[tool.ruff.lint]
+# Short fail-closed guards and adjacent transaction statements are intentionally
+# compact in the request-path code. Formatting remains enforced separately.
+ignore = ["E701", "E702"]
+
 [tool.mypy]
 strict = true
 plugins = []
-
