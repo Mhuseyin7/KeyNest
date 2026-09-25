@@ -153,7 +153,9 @@ def register(body: Register, request: Request, db: Session = Depends(database)) 
     if db.query(User).filter_by(email=body.email.lower()).first():
         raise HTTPException(409, "account already exists")
     user = User(email=body.email.lower(), password_hash=hash_password(body.password))
-    db.add(user); db.commit(); db.refresh(user)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
     return {"id": str(user.id)}
 
 
@@ -172,9 +174,11 @@ def login(body: Login, request: Request, response: Response, db: Session = Depen
 @app.post("/api/v1/organizations", status_code=201)
 def create_organization(body: OrganizationIn, user: User = Depends(current_user), db: Session = Depends(database)) -> dict[str, str]:
     organization = Organization(name=body.name, slug=body.slug)
-    db.add(organization); db.flush()
+    db.add(organization)
+    db.flush()
     db.add(OrganizationMember(organization_id=organization.id, user_id=user.id, role=Role.OWNER))
-    audit(db, organization.id, user.id, "organization.created", "organization", str(organization.id)); db.commit()
+    audit(db, organization.id, user.id, "organization.created", "organization", str(organization.id))
+    db.commit()
     return {"id": str(organization.id), "slug": organization.slug}
 
 
@@ -182,74 +186,99 @@ def create_organization(body: OrganizationIn, user: User = Depends(current_user)
 def create_project(organization_id: uuid.UUID, body: ProjectIn, user: User = Depends(current_user), db: Session = Depends(database)) -> dict[str, str]:
     require_permission(db, user.id, organization_id, "secret:create")
     project = Project(organization_id=organization_id, name=body.name)
-    db.add(project); db.commit(); return {"id": str(project.id)}
+    db.add(project)
+    db.commit()
+    return {"id": str(project.id)}
 
 
 @app.post("/api/v1/projects/{project_id}/environments", status_code=201)
 def create_environment(project_id: uuid.UUID, body: EnvironmentIn, user: User = Depends(current_user), db: Session = Depends(database)) -> dict[str, str]:
-    _, organization_id = project_org(db, project_id); require_permission(db, user.id, organization_id, "secret:create")
+    _, organization_id = project_org(db, project_id)
+    require_permission(db, user.id, organization_id, "secret:create")
     if body.inherits_from_id:
         parent, _ = environment_org(db, body.inherits_from_id)
         if parent.project_id != project_id:
             raise HTTPException(400, "inheritance must remain within project")
     environment = Environment(project_id=project_id, name=body.name, inherits_from_id=body.inherits_from_id)
-    db.add(environment); db.commit(); return {"id": str(environment.id)}
+    db.add(environment)
+    db.commit()
+    return {"id": str(environment.id)}
 
 
 @app.get("/api/v1/environments/{environment_id}/secrets")
 def list_secrets(environment_id: uuid.UUID, user: User = Depends(current_user), db: Session = Depends(database)) -> list[dict[str, object]]:
-    _, organization_id = environment_org(db, environment_id); require_permission(db, user.id, organization_id, "secret:list_names")
+    _, organization_id = environment_org(db, environment_id)
+    require_permission(db, user.id, organization_id, "secret:list_names")
     rows = db.query(SecretKey).filter_by(environment_id=environment_id).all()
     return [{"id": str(row.id), "key_name": row.key_name, "active_version": row.active_version, "status": row.status, "expires_at": row.expires_at, "updated_at": row.created_at} for row in rows]
 
 
 @app.post("/api/v1/environments/{environment_id}/secrets", status_code=201)
 def set_secret(environment_id: uuid.UUID, body: SecretIn, user: User = Depends(current_user), db: Session = Depends(database)) -> dict[str, object]:
-    _, organization_id = environment_org(db, environment_id); require_permission(db, user.id, organization_id, "secret:update")
+    _, organization_id = environment_org(db, environment_id)
+    require_permission(db, user.id, organization_id, "secret:update")
     key = db.query(SecretKey).filter_by(environment_id=environment_id, key_name=body.key_name).one_or_none()
     if key is None:
-        key = SecretKey(environment_id=environment_id, key_name=body.key_name); db.add(key); db.flush(); version = 1
+        key = SecretKey(environment_id=environment_id, key_name=body.key_name)
+        db.add(key)
+        db.flush()
+        version = 1
         event = "secret.created"
     else:
-        version = (key.active_version or 0) + 1; event = "secret.changed"
+        version = (key.active_version or 0) + 1
+        event = "secret.changed"
     aad = f"keynest:v1:{organization_id}:{key.id}:{version}".encode()
     encrypted = encrypt_value(body.value, cfg.master_key_bytes(), aad)
     db.add(SecretVersion(secret_key_id=key.id, version=version, ciphertext=encrypted.ciphertext, nonce=encrypted.nonce, wrapped_dek=encrypted.wrapped_dek, wrapped_dek_nonce=encrypted.wrapped_dek_nonce, encryption_version=encrypted.encryption_version, metadata_json={}, created_by_id=user.id))
-    key.active_version = version; audit(db, organization_id, user.id, event, "secret", str(key.id)); db.commit()
+    key.active_version = version
+    audit(db, organization_id, user.id, event, "secret", str(key.id))
+    db.commit()
     return {"id": str(key.id), "key_name": key.key_name, "active_version": version}
 
 
 @app.post("/api/v1/secrets/{secret_id}/reveal")
 def reveal_secret(secret_id: uuid.UUID, user: User = Depends(current_user), db: Session = Depends(database)) -> dict[str, str]:
     key = db.get(SecretKey, secret_id)
-    if not key or key.active_version is None: raise HTTPException(404, "resource not found")
-    _, organization_id = environment_org(db, key.environment_id); require_permission(db, user.id, organization_id, "secret:read_values")
+    if not key or key.active_version is None:
+        raise HTTPException(404, "resource not found")
+    _, organization_id = environment_org(db, key.environment_id)
+    require_permission(db, user.id, organization_id, "secret:read_values")
     version = db.query(SecretVersion).filter_by(secret_key_id=key.id, version=key.active_version).one()
     aad = f"keynest:v1:{organization_id}:{key.id}:{version.version}".encode()
     value = decrypt_value(EncryptedSecret(version.ciphertext, version.nonce, version.wrapped_dek, version.wrapped_dek_nonce, version.encryption_version), cfg.master_key_bytes(), aad)
-    audit(db, organization_id, user.id, "secret.revealed", "secret", str(key.id)); db.commit()
+    audit(db, organization_id, user.id, "secret.revealed", "secret", str(key.id))
+    db.commit()
     return {"key_name": key.key_name, "value": value}
 
 
 @app.post("/api/v1/service-tokens", status_code=201)
 def create_token(body: TokenIn, user: User = Depends(current_user), db: Session = Depends(database)) -> dict[str, object]:
-    _, organization_id = project_org(db, body.project_id); require_permission(db, user.id, organization_id, "token:create")
-    if body.expires_at <= now(): raise HTTPException(400, "token expiry must be in the future")
+    _, organization_id = project_org(db, body.project_id)
+    require_permission(db, user.id, organization_id, "token:create")
+    if body.expires_at <= now():
+        raise HTTPException(400, "token expiry must be in the future")
     if body.environment_id:
         env, _ = environment_org(db, body.environment_id)
-        if env.project_id != body.project_id: raise HTTPException(400, "environment not in project")
+        if env.project_id != body.project_id:
+            raise HTTPException(400, "environment not in project")
     plaintext, prefix, digest = new_token()
     service_token = ServiceToken(prefix=prefix, token_hash=digest, project_id=body.project_id, environment_id=body.environment_id, permissions=body.permissions, expires_at=body.expires_at)
-    db.add(service_token); audit(db, organization_id, user.id, "service_token.created", "service_token", str(service_token.id)); db.commit()
+    db.add(service_token)
+    audit(db, organization_id, user.id, "service_token.created", "service_token", str(service_token.id))
+    db.commit()
     return {"id": str(service_token.id), "token": plaintext, "warning": "Copy this token now. It will not be shown again."}
 
 
 @app.post("/api/v1/service-tokens/{token_id}/revoke", status_code=204)
 def revoke_token(token_id: uuid.UUID, user: User = Depends(current_user), db: Session = Depends(database)) -> Response:
     service_token = db.get(ServiceToken, token_id)
-    if service_token is None: raise HTTPException(404, "resource not found")
-    _, organization_id = project_org(db, service_token.project_id); require_permission(db, user.id, organization_id, "token:revoke")
-    service_token.revoked_at = now(); audit(db, organization_id, user.id, "service_token.revoked", "service_token", str(token_id)); db.commit()
+    if service_token is None:
+        raise HTTPException(404, "resource not found")
+    _, organization_id = project_org(db, service_token.project_id)
+    require_permission(db, user.id, organization_id, "token:revoke")
+    service_token.revoked_at = now()
+    audit(db, organization_id, user.id, "service_token.revoked", "service_token", str(token_id))
+    db.commit()
     return Response(status_code=204)
 
 
@@ -264,10 +293,12 @@ def cli_values(environment_id: uuid.UUID, request: Request, service_token: Servi
         raise HTTPException(403, "permission denied")
     result: dict[str, str] = {}
     for key in db.query(SecretKey).filter_by(environment_id=environment_id).all():
-        if key.active_version is None: continue
+        if key.active_version is None:
+            continue
         version = db.query(SecretVersion).filter_by(secret_key_id=key.id, version=key.active_version).one()
         aad = f"keynest:v1:{organization_id}:{key.id}:{version.version}".encode()
         result[key.key_name] = decrypt_value(EncryptedSecret(version.ciphertext, version.nonce, version.wrapped_dek, version.wrapped_dek_nonce, version.encryption_version), cfg.master_key_bytes(), aad)
     # Do not audit values. Audit the access event only.
-    audit(db, organization_id, None, "secret.injected", "environment", str(environment_id)); db.commit()
+    audit(db, organization_id, None, "secret.injected", "environment", str(environment_id))
+    db.commit()
     return JSONResponse(content={"values": result}, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
