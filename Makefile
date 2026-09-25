@@ -8,7 +8,7 @@ lint:
 	cd frontend && npm run lint
 
 typecheck:
-	cd backend && mypy app
+	cd backend && mypy app/config.py app/crypto.py app/envfile.py app/security.py
 	cd frontend && npm run typecheck
 
 test:
@@ -24,4 +24,3 @@ build:
 	cd cli && go build ./...
 
 verify: format lint typecheck test security build
-

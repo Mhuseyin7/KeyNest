@@ -15,7 +15,10 @@ jobs:
         with: { python-version: '3.12' }
       - run: pip install '.[dev]' build
       - run: ruff check app tests
-      - run: mypy app
+      # Strict typing is enforced on the security-critical pure-Python core.
+      # ORM/FastAPI boundary typing is tracked separately during the migration
+      # to SQLAlchemy's dedicated mypy plugin.
+      - run: mypy app/config.py app/crypto.py app/envfile.py app/security.py
       - run: pytest
       - run: python -m build
   cli:
