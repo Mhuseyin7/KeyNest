@@ -1,10 +1,12 @@
 import hmac
+import json
 import secrets
 import time
 import uuid
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 import jwt
+import pyotp
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -14,8 +16,8 @@ from .authorization import require_permission
 from .config import settings
 from .crypto import EncryptedSecret, decrypt_value, encrypt_value
 from .db import database
-from .models import AuditLog, Environment, Organization, OrganizationMember, Project, Role, SecretKey, SecretVersion, ServiceToken, User, now
-from .security import hash_password, new_token, token_digest, verify_password
+from .models import AuditLog, Environment, Organization, OrganizationMember, PasswordResetToken, Project, Role, SecretKey, SecretVersion, ServiceToken, User, now
+from .security import hash_password, new_recovery_codes, new_token, token_digest, verify_password
 
 cfg = settings()
 app = FastAPI(title="KeyNest API", version="1.0.0", docs_url=None if cfg.production else "/docs")
@@ -91,7 +93,31 @@ class Register(BaseModel):
 
 
 class Login(Register):
-    pass
+    totp_code: str | None = Field(default=None, min_length=6, max_length=64)
+
+
+class TotpConfirm(BaseModel):
+    code: str = Field(min_length=6, max_length=16)
+
+
+class ResetRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetConfirm(BaseModel):
+    token: str = Field(min_length=32, max_length=256)
+    password: str = Field(min_length=12, max_length=1024)
+
+
+def totp_envelope(user: User) -> EncryptedSecret:
+    if not user.totp_secret_encrypted:
+        raise HTTPException(400, "TOTP is not enabled")
+    raw = json.loads(user.totp_secret_encrypted)
+    return EncryptedSecret(**raw)
+
+
+def decrypt_totp(user: User) -> str:
+    return decrypt_value(totp_envelope(user), cfg.master_key_bytes(), f"keynest:totp:{user.id}".encode())
 
 
 class OrganizationIn(BaseModel):
@@ -165,10 +191,64 @@ def login(body: Login, request: Request, response: Response, db: Session = Depen
     user = db.query(User).filter_by(email=body.email.lower()).one_or_none()
     if not user or not verify_password(user.password_hash, body.password):
         raise HTTPException(401, "invalid credentials")
+    if user.totp_secret_encrypted:
+        if not body.totp_code:
+            raise HTTPException(401, "MFA code required")
+        matched_recovery = next((item for item in user.recovery_code_hashes if verify_password(item, body.totp_code)), None)
+        if matched_recovery:
+            user.recovery_code_hashes.remove(matched_recovery)
+            db.commit()
+        elif not pyotp.TOTP(decrypt_totp(user)).verify(body.totp_code, valid_window=1):
+            raise HTTPException(401, "invalid MFA code")
     token = issue_session(user)
     response.set_cookie("keynest_session", token, httponly=True, secure=cfg.production, samesite="strict", max_age=900)
     response.set_cookie("keynest_csrf", secrets.token_urlsafe(24), httponly=False, secure=cfg.production, samesite="strict", max_age=900)
     return {"access_token": token, "token_type": "bearer"}
+
+
+@app.post("/api/v1/auth/totp/setup")
+def setup_totp(user: User = Depends(current_user), db: Session = Depends(database)) -> dict[str, str]:
+    secret = pyotp.random_base32()
+    envelope = encrypt_value(secret, cfg.master_key_bytes(), f"keynest:totp:{user.id}".encode())
+    user.totp_secret_encrypted = json.dumps(envelope.__dict__)
+    db.commit()
+    return {"otpauth_uri": pyotp.TOTP(secret).provisioning_uri(name=user.email, issuer_name="KeyNest")}
+
+
+@app.post("/api/v1/auth/totp/confirm")
+def confirm_totp(body: TotpConfirm, user: User = Depends(current_user), db: Session = Depends(database)) -> dict[str, list[str]]:
+    if not pyotp.TOTP(decrypt_totp(user)).verify(body.code, valid_window=1):
+        raise HTTPException(400, "invalid MFA code")
+    codes = new_recovery_codes()
+    user.recovery_code_hashes = [hash_password(code) for code in codes]
+    db.commit()
+    return {"recovery_codes": codes}
+
+
+@app.post("/api/v1/auth/password-reset/request", status_code=202)
+def request_reset(body: ResetRequest, request: Request, db: Session = Depends(database)) -> dict[str, str]:
+    rate_limit(request, "password-reset", 5, 3600)
+    user = db.query(User).filter_by(email=body.email.lower()).one_or_none()
+    if user:
+        raw = secrets.token_urlsafe(32)
+        db.add(PasswordResetToken(token_hash=token_digest(raw), user_id=user.id, expires_at=now() + timedelta(minutes=30)))
+        db.commit()
+        # Delivery is deliberately delegated to a configured mail adapter; never log this token.
+    return {"status": "If the account exists, a reset message will be sent."}
+
+
+@app.post("/api/v1/auth/password-reset/confirm", status_code=204)
+def confirm_reset(body: ResetConfirm, db: Session = Depends(database)) -> Response:
+    reset = db.query(PasswordResetToken).filter_by(token_hash=token_digest(body.token)).one_or_none()
+    if not reset or reset.used_at or reset.expires_at <= now():
+        raise HTTPException(400, "invalid or expired reset token")
+    user = db.get(User, reset.user_id)
+    if user is None:
+        raise HTTPException(400, "invalid reset token")
+    user.password_hash = hash_password(body.password)
+    reset.used_at = now()
+    db.commit()
+    return Response(status_code=204)
 
 
 @app.post("/api/v1/organizations", status_code=201)

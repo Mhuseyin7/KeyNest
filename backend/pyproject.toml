@@ -5,7 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115,<1", "uvicorn[standard]>=0.30,<1", "sqlalchemy>=2.0,<3",
   "psycopg[binary]>=3.2,<4", "cryptography>=43,<45", "argon2-cffi>=23,<24",
-  "pydantic-settings>=2.6,<3", "PyJWT>=2.9,<3", "email-validator>=2.2,<3"
+  "pydantic-settings>=2.6,<3", "PyJWT>=2.9,<3", "email-validator>=2.2,<3", "pyotp>=2.9,<3"
 ]
 
 [build-system]

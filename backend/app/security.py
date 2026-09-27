@@ -29,3 +29,8 @@ def new_token() -> tuple[str, str, str]:
 def token_digest(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
+
+def new_recovery_codes(count: int = 10) -> list[str]:
+    """Create display-once MFA recovery codes; persist only their Argon2id hashes."""
+    return [secrets.token_urlsafe(18) for _ in range(count)]
+
