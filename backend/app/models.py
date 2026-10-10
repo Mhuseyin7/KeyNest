@@ -30,6 +30,7 @@ class User(IdTime, Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(512))
     totp_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    totp_pending_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     recovery_code_hashes: Mapped[list[str]] = mapped_column(JSON, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 

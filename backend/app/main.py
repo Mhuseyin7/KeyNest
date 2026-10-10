@@ -120,6 +120,13 @@ def decrypt_totp(user: User) -> str:
     return decrypt_value(totp_envelope(user), cfg.master_key_bytes(), f"keynest:totp:{user.id}".encode())
 
 
+def decrypt_pending_totp(user: User) -> str:
+    if not user.totp_pending_encrypted:
+        raise HTTPException(400, "TOTP setup is not pending")
+    raw = json.loads(user.totp_pending_encrypted)
+    return decrypt_value(EncryptedSecret(**raw), cfg.master_key_bytes(), f"keynest:totp:{user.id}".encode())
+
+
 class OrganizationIn(BaseModel):
     name: str = Field(min_length=2, max_length=128)
     slug: str = Field(pattern=r"^[a-z0-9-]{2,80}$")
@@ -212,16 +219,18 @@ def login(body: Login, request: Request, response: Response, db: Session = Depen
 def setup_totp(user: User = Depends(current_user), db: Session = Depends(database)) -> dict[str, str]:
     secret = pyotp.random_base32()
     envelope = encrypt_value(secret, cfg.master_key_bytes(), f"keynest:totp:{user.id}".encode())
-    user.totp_secret_encrypted = json.dumps(envelope.__dict__)
+    user.totp_pending_encrypted = json.dumps(envelope.__dict__)
     db.commit()
     return {"otpauth_uri": pyotp.TOTP(secret).provisioning_uri(name=user.email, issuer_name="KeyNest")}
 
 
 @app.post("/api/v1/auth/totp/confirm")
 def confirm_totp(body: TotpConfirm, user: User = Depends(current_user), db: Session = Depends(database)) -> dict[str, list[str]]:
-    if not pyotp.TOTP(decrypt_totp(user)).verify(body.code, valid_window=1):
+    if not pyotp.TOTP(decrypt_pending_totp(user)).verify(body.code, valid_window=1):
         raise HTTPException(400, "invalid MFA code")
     codes = new_recovery_codes()
+    user.totp_secret_encrypted = user.totp_pending_encrypted
+    user.totp_pending_encrypted = None
     user.recovery_code_hashes = [hash_password(code) for code in codes]
     db.commit()
     return {"recovery_codes": codes}
@@ -346,6 +355,7 @@ def create_token(body: TokenIn, user: User = Depends(current_user), db: Session 
     plaintext, prefix, digest = new_token()
     service_token = ServiceToken(prefix=prefix, token_hash=digest, project_id=body.project_id, environment_id=body.environment_id, permissions=body.permissions, expires_at=body.expires_at)
     db.add(service_token)
+    db.flush()
     audit(db, organization_id, user.id, "service_token.created", "service_token", str(service_token.id))
     db.commit()
     return {"id": str(service_token.id), "token": plaintext, "warning": "Copy this token now. It will not be shown again."}
