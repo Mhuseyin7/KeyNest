@@ -203,7 +203,9 @@ def login(body: Login, request: Request, response: Response, db: Session = Depen
     token = issue_session(user)
     response.set_cookie("keynest_session", token, httponly=True, secure=cfg.production, samesite="strict", max_age=900)
     response.set_cookie("keynest_csrf", secrets.token_urlsafe(24), httponly=False, secure=cfg.production, samesite="strict", max_age=900)
-    return {"access_token": token, "token_type": "bearer"}
+    # The browser uses the HttpOnly cookie. Do not duplicate the session JWT in
+    # JSON where frontend code can accidentally persist or expose it.
+    return {"status": "authenticated"}
 
 
 @app.post("/api/v1/auth/totp/setup")

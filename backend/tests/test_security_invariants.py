@@ -17,3 +17,9 @@ def test_list_endpoint_does_not_serialize_ciphertext_or_values() -> None:
     assert "ciphertext" not in list_route
     assert '"value"' not in list_route
 
+
+def test_browser_login_does_not_return_session_jwt_in_json() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    login_route = source[source.index("def login"):source.index("def setup_totp")]
+    assert '"access_token"' not in login_route
+
