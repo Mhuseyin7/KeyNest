@@ -3,7 +3,7 @@
 The CLI never accepts a secret value in a command argument and `run` never writes `.env`. It reads a scoped service token from a user-only configuration file after `login`; do not use this MVP storage mode on shared hosts. Prefer `KEYNEST_TOKEN` injection from an OS/CI secret store and add the device-authorization/OS-keychain adapter before a public release.
 
 ```bash
-keynest login --server https://keynest.example.com --token knst_...
+printf '%s\n' "$KEYNEST_TOKEN" | keynest login --server https://keynest.example.com
 keynest run --environment ENVIRONMENT_UUID -- node server.js
 ```
 

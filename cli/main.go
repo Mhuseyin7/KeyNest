@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,7 +35,7 @@ func saveConfig(c config) error {
 	b, err := json.Marshal(c); if err != nil { return err }
 	return os.WriteFile(path, b, 0600)
 }
-func usage() { fmt.Fprintln(os.Stderr, "Usage: keynest login --server URL --token knst_... | keynest run --environment UUID -- command [args...]") }
+func usage() { fmt.Fprintln(os.Stderr, "Usage: KEYNEST_TOKEN=knst_... keynest login --server URL | keynest run --environment UUID -- command [args...]") }
 func main() {
 	if len(os.Args) < 2 { usage(); os.Exit(2) }
 	var err error
@@ -42,16 +43,23 @@ func main() {
 	if err != nil { fmt.Fprintln(os.Stderr, "keynest:", err); os.Exit(1) }
 }
 func login(args []string) error {
-	var server, token string
+	var server string
 	for len(args) > 0 {
 		switch args[0] {
 		case "--server": if len(args) < 2 { return errors.New("missing --server value") }; server, args = args[1], args[2:]
-		case "--token": if len(args) < 2 { return errors.New("missing --token value") }; token, args = args[1], args[2:]
 		default: return fmt.Errorf("unknown login flag %q", args[0])
 		}
 	}
+	token := strings.TrimSpace(os.Getenv("KEYNEST_TOKEN"))
+	if token == "" {
+		fmt.Fprint(os.Stderr, "Service token (read from stdin; never pass it as an argument): ")
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && len(line) == 0 { return errors.New("could not read service token from stdin") }
+		token = strings.TrimSpace(line)
+		fmt.Fprintln(os.Stderr)
+	}
 	if !strings.HasPrefix(server, "https://") || !strings.HasPrefix(token, "knst_") { return errors.New("login requires an HTTPS server and a KeyNest service token") }
-	// Do not accept passwords in the CLI. Device authorization will replace token paste in a later compatible flow.
+	// Do not accept secrets in command-line arguments; shell history and process listings can expose them.
 	return saveConfig(config{Server: strings.TrimRight(server, "/"), Token: token})
 }
 func logout() error { path, err := configPath(); if err != nil { return err }; return os.Remove(path) }
